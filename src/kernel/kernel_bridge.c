@@ -6839,21 +6839,43 @@ static void ke_shadow_remove(uint32_t guest_va)
  * Opt-in because it changes what every such wait does: a wait that failed at
  * once now blocks until the event is set, and on a title whose setter the
  * runtime does not model yet (a GPU interrupt, say) that turns a spin into a
- * hang. Turn it on for a title that waits on events it built itself. */
+ * hang. Turn it on for a title that waits on events it built itself.
+ *
+ * RECOMP_TITLE_KEVENTS_SKIP=<va>[,<va>...] (hex) leaves out single events
+ * whose setter the runtime does not model yet, e.g. a D3D event the GPU
+ * interrupt sets: those keep the old fail-at-once path. */
+#define KE_GUEST_EVENT_SKIP_MAX 16
+
 static HANDLE ke_guest_event(uint32_t guest_va, int *type)
 {
     static int enabled = -1;
+    static uint32_t skip[KE_GUEST_EVENT_SKIP_MAX];
+    static uint32_t skip_count;
     uint32_t hdr, i;
     HANDLE h = NULL;
 
     if (enabled < 0) {
         const char *e = getenv("RECOMP_TITLE_KEVENTS");
+        const char *s = getenv("RECOMP_TITLE_KEVENTS_SKIP");
+        while (s && *s && skip_count < KE_GUEST_EVENT_SKIP_MAX) {
+            char *end;
+            unsigned long va = strtoul(s, &end, 16);
+            if (end == s)
+                break;
+            skip[skip_count++] = (uint32_t)va;
+            s = end;
+            while (*s == ',' || *s == ' ')
+                s++;
+        }
         enabled = e && *e == '1';
     }
     if (!enabled)
         return NULL;
     if (guest_va < 0x10000u || (guest_va & 3u))
         return NULL;
+    for (i = 0; i < skip_count; i++)
+        if (skip[i] == guest_va)
+            return NULL;
     if (guest_va >= 0x04000000u && (guest_va < 0x80000000u || guest_va >= 0x84000000u))
         return NULL;                               /* RAM or the contiguous window */
     hdr = BRIDGE_MEM32(guest_va);
