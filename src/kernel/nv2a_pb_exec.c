@@ -138,6 +138,41 @@ static uint32_t dma_resolve(uint32_t offset)
     return offset;                         /* nothing better to offer */
 }
 
+/* Physical base of the DMA object a context-DMA handle names, or ~0u.
+ *
+ * Unlike the colour surface, the semaphore's DMA object does not start at
+ * physical 0: MK: Shaolin Monks' D3D gives it a 32-byte object at the page
+ * it polls, so the offset alone (0) is not an address. The object is where
+ * the hardware finds it: the handle hashes into RAMHT in instance memory,
+ * the entry names the object, and the object holds the base. The title's
+ * D3D wrote all three into the NV2A aperture, which here is plain memory,
+ * so they can be read back exactly as the GPU would. RAMHT is small (4 KB
+ * as configured by the XDK), so a linear search stands in for the hash. */
+#define NV2A_APERTURE      0xFD000000u
+#define NV_PFIFO_RAMHT     0x00002210u
+#define NV_PRAMIN          0x00700000u
+
+static uint32_t dma_object_base(uint32_t handle)
+{
+    const uint8_t *nv = (const uint8_t *)xbox_GetMemoryOffset() + NV2A_APERTURE;
+    uint32_t ramht = *(const uint32_t *)(nv + NV_PFIFO_RAMHT);
+    uint32_t base  = (ramht & 0x1F0u) << 12;
+    uint32_t size  = 0x1000u << ((ramht >> 16) & 3u);
+    uint32_t o;
+
+    for (o = 0; o < size; o += 8) {
+        const uint32_t *e = (const uint32_t *)(nv + NV_PRAMIN + base + o);
+        if (e[0] == handle && (e[1] & 0x80000000u)) {       /* valid entry */
+            const uint32_t *dma = (const uint32_t *)
+                (nv + NV_PRAMIN + ((e[1] & 0xFFFFu) << 4));
+            /* word 0: class and flags, adjust in bits 20..31;
+             * word 2: page frame (low bits are flags). */
+            return (dma[2] & 0xFFFFF000u) | (dma[0] >> 20);
+        }
+    }
+    return ~0u;
+}
+
 static int surface_write_refused(uint32_t base, uint32_t bytes, const char *what)
 {
     static int said;
@@ -205,6 +240,9 @@ static int surface_write_refused(uint32_t base, uint32_t bytes, const char *what
 #define NV097_SET_FLIP_MODULO             0x0128
 #define NV097_FLIP_INCREMENT_WRITE        0x012C
 #define NV097_FLIP_STALL                  0x0130
+#define NV097_SET_CONTEXT_DMA_SEMAPHORE   0x01A4
+#define NV097_SET_SEMAPHORE_OFFSET        0x1D6C
+#define NV097_BACK_END_WRITE_SEMAPHORE_RELEASE 0x1D70
 #define NV097_ARRAY_ELEMENT16             0x1800
 /* Draw a run of vertices straight out of the arrays, with no index list:
  * bits 0..23 are the first vertex, bits 24..31 the count minus one. It may
@@ -307,6 +345,7 @@ static struct {
     uint32_t clear_color;
     uint32_t clears, unhandled_total;
     uint32_t flip_read, flip_write, flip_modulo, flips;
+    uint32_t semaphore_dma, semaphore_offset;
     uint32_t tris_drawn, tris_skipped_offscreen, batches_untransformed;
     /* Why a batch came out flat. "Untextured" has two causes that look
      * identical on screen and want opposite fixes: the batch carried no
@@ -3715,6 +3754,36 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
         if (s_gpu.prim && s_gpu.idx_count < NV_MAX_INDICES)
             s_gpu.idx[s_gpu.idx_count++] = param;
         break;
+    /* The GPU's progress report. D3D's fence is a
+     * BACK_END_WRITE_SEMAPHORE_RELEASE of its "time" after each batch of
+     * work; the GPU writes that value into the semaphore DMA object and
+     * D3D's BlockOnTime spins until it catches up. Nothing else moves the
+     * counter, so a title that waits for the GPU at startup (MK: Shaolin
+     * Monks does, in device init) hangs there forever without this. */
+    case NV097_SET_CONTEXT_DMA_SEMAPHORE:
+        s_gpu.semaphore_dma = param;
+        return;
+
+    case NV097_SET_SEMAPHORE_OFFSET:
+        s_gpu.semaphore_offset = param;
+        return;
+
+    case NV097_BACK_END_WRITE_SEMAPHORE_RELEASE: {
+        static int said;
+        uint32_t base = dma_object_base(s_gpu.semaphore_dma);
+        uint32_t va;
+
+        if (base == ~0u) {
+            if (!said++)
+                fprintf(stderr, "  [GPU] semaphore release %u dropped: DMA "
+                        "handle 0x%08X not in RAMHT\n", param, s_gpu.semaphore_dma);
+            return;
+        }
+        va = dma_resolve(base + s_gpu.semaphore_offset);
+        if (!surface_write_refused(va, 4, "semaphore"))
+            *(volatile uint32_t *)((uint8_t *)xbox_GetMemoryOffset() + va) = param;
+        return;
+    }
 
     case NV097_SET_FLIP_READ:
         if (s_ftrace == 2)
