@@ -149,6 +149,17 @@ static LRESULT CALLBACK fb_wndproc(HWND h, UINT m, WPARAM w, LPARAM l)
 {
     switch (m) {
     case WM_CLOSE:
+        /* Closing the window quits the title. Only clearing s_fb_running
+         * here let the next AvSetDisplayMode / surface setup call
+         * xbox_FramebufferWindowStart() and open a fresh window. Terminate
+         * rather than ExitProcess: guest threads print all the time, and
+         * one killed while holding a CRT stream lock would hang the exit
+         * flush. Flush our own output first. */
+        fprintf(stderr, "  [FBWIN] window closed, exiting\n");
+        fflush(stdout);
+        fflush(stderr);
+        TerminateProcess(GetCurrentProcess(), 0);
+        return 0;
     case WM_DESTROY:
         InterlockedExchange(&s_fb_running, 0);
         return 0;
