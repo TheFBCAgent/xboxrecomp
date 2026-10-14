@@ -2568,7 +2568,13 @@ static void raster_xf_triangle(const Nv2aVshOutput *va, const Nv2aVshOutput *vb,
         sv = (float)s_gpu.texs[0].height;
     }
     for (k = 0; k < 3; k++) {
-        T.iw[k] = 1.0f / v[k]->pos[3];
+        /* D3D's pass-through program for pre-transformed (XYZRHW) vertices
+         * takes oPos.w = rcp(rhw), and a title that leaves rhw at 0 for its
+         * 2D quads (MK: Shaolin Monks' menus) gets w = +inf. The hardware
+         * draws those unperspective; 1/w = 0 here would make every
+         * perspective-divided texcoord 0/0 and blend the quad away. */
+        float w = v[k]->pos[3];
+        T.iw[k] = (w == 0.0f || isinf(w)) ? 1.0f : 1.0f / w;
         T.uv[k][0] = v[k]->tex[0][0] * su * T.iw[k];
         T.uv[k][1] = v[k]->tex[0][1] * sv * T.iw[k];
     }
@@ -3086,6 +3092,29 @@ static void draw_primitive(void)
                         s_xf[0].pos[0], s_xf[0].pos[1], s_xf[0].pos[2],
                         s_xf[0].pos[3], s_xf[1].pos[0], s_xf[1].pos[1],
                         s_xf[2].pos[0], s_xf[2].pos[1], 10);
+            /* What the program handed the combiners, next to where it put
+             * the vertex: a quad in the right place that blends away to
+             * nothing has a zero diffuse alpha or texcoords off the texture,
+             * and the position alone cannot say which. */
+            if ((s_gpu.xf_mode & 3) == 2) {
+                uint32_t k, a;
+                for (k = 0; k < 3 && k < s_gpu.idx_count; k++)
+                    fprintf(stderr, "[FTRACE]     out%u d0 %g %g %g %g  d1 %g %g %g %g"
+                            "  t0 %g %g %g %g%c", k,
+                            s_xf[k].d0[0], s_xf[k].d0[1], s_xf[k].d0[2], s_xf[k].d0[3],
+                            s_xf[k].d1[0], s_xf[k].d1[1], s_xf[k].d1[2], s_xf[k].d1[3],
+                            s_xf[k].tex[0][0], s_xf[k].tex[0][1],
+                            s_xf[k].tex[0][2], s_xf[k].tex[0][3], 10);
+                for (a = 0; a < NV2A_VSH_INPUTS; a++) {
+                    const VertexAttr *at = &s_gpu.attr[a];
+                    float in[4] = {0, 0, 0, 1};
+                    if (!at->size)
+                        continue;
+                    fetch_attr(at, s_gpu.idx[0], in);
+                    fprintf(stderr, "[FTRACE]     in0 v%u type %u size %u = %g %g %g %g%c",
+                            a, at->type, at->size, in[0], in[1], in[2], in[3], 10);
+                }
+            }
             if (s_gpu.rc_seen) {
                 int st;
                 fprintf(stderr, "[FTRACE]     rc stages %u ctl %08X prog %05X fin %08X %08X",
