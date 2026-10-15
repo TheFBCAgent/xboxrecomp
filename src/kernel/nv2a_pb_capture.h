@@ -5,10 +5,13 @@
  * method is mirrored into a shadow table (last value per (subchannel, method))
  * and, for one frame, into a method stream. RECOMP_PB_CAPTURE_FLIP=<N> picks
  * the frame (the Nth FLIP_STALL); the default is the first frame. Alternatively
- * RECOMP_PB_CAPTURE_MS=<T> arms at the first FLIP_STALL on/after T ms since
- * boot (it overrides the flip count), which is the reproducible choice when
- * the frame to capture follows a wall-clock trigger such as a scripted pad
- * event. At the frame boundary the tool writes a self-contained file holding:
+ * RECOMP_PB_CAPTURE_MS=<T> arms at the first FLIP_STALL on/after T ms (it
+ * overrides the flip count), which is the reproducible choice when the frame
+ * to capture follows a wall-clock trigger such as a scripted pad event. The
+ * clock starts when the capture code first runs (the first pushbuffer method
+ * or flip), not at process start, so T sits a little behind the run's
+ * wall-clock time. At the frame boundary the tool writes a self-contained
+ * file holding:
  *
  *   - the three guest-memory regions the executor's draws read, snapshotted at
  *     the start of the frame: main RAM (VA 0, 64 MiB, the image + heap that
