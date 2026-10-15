@@ -1963,25 +1963,20 @@ static HANDLE ke_guest_event_prepare(uint32_t guest_va, int *type)
     return h;
 }
 
-/* ── KeSetEvent (ordinal 145) ────────────────────────────── */
-static void bridge_KeSetEvent(void)
+/* KeSetEvent's work, also used by the runtime itself (xbox_Nv2aSoftwareMethod).
+ * Returns what KeSetEvent puts in eax. */
+static uint32_t ke_set_event(uint32_t guest_va)
 {
-    uint32_t guest_va = STACK_ARG(0);
-    uint32_t increment = STACK_ARG(1);
-    uint32_t wait = STACK_ARG(2);
     HANDLE h;
-
-    (void)increment;
-    (void)wait;
 
     {   /* An event the title built itself (see ke_guest_event). */
         int type;
         HANDLE ge = ke_guest_event(guest_va, &type);
         if (ge) {
-            g_eax = BRIDGE_MEM32(guest_va + 4) != 0;   /* previous state */
+            uint32_t prev = BRIDGE_MEM32(guest_va + 4) != 0;
             BRIDGE_MEM32(guest_va + 4) = 1;
             SetEvent(ge);
-            return;
+            return prev;
         }
     }
     h = ke_shadow_lookup(guest_va);
@@ -1989,10 +1984,19 @@ static void bridge_KeSetEvent(void)
         h = bridge_resolve_handle(guest_va);
     if (!h)
         h = XBOX_TO_NATIVE(guest_va);
-    if (h)
-        g_eax = (uint32_t)SetEvent(h);
-    else
-        g_eax = 0;
+    return h ? (uint32_t)SetEvent(h) : 0;
+}
+
+/* ── KeSetEvent (ordinal 145) ────────────────────────────── */
+static void bridge_KeSetEvent(void)
+{
+    uint32_t guest_va = STACK_ARG(0);
+    uint32_t increment = STACK_ARG(1);
+    uint32_t wait = STACK_ARG(2);
+
+    (void)increment;
+    (void)wait;
+    g_eax = ke_set_event(guest_va);
 }
 
 /* ── KeWaitForSingleObject (ordinal 159) ─────────────────── */
@@ -2881,6 +2885,35 @@ static void bridge_KeConnectInterrupt(void)
 uint32_t xbox_GetConnectedInterrupt(uint32_t vector)
 {
     return (vector < XBOX_MAX_VECTORS) ? g_connected_isr[vector] : 0;
+}
+
+/* A software method: NV097 NO_OPERATION with a non-zero parameter, which on
+ * hardware raises a PGRAPH error interrupt that D3D's interrupt handler (its
+ * DPC) services by the parameter's low 5 bits. The runtime delivers no PGRAPH
+ * interrupts, so a renderer that executes the pushbuffer reports each one here
+ * and the effect D3D depends on is reproduced directly:
+ *   - 5: set the event at miniport + 0x1A4, the one D3D's pushbuffer-space
+ *     wait (and BlockOnTime) blocks on until the GPU has reached the notify.
+ *     The miniport is the context of the ISR connected on the NV2A vector.
+ * Others are counted and the first few logged. Returns 1 when handled. */
+int xbox_Nv2aSoftwareMethod(uint32_t param)
+{
+    uint32_t kint = xbox_GetConnectedInterrupt(NV2A_VECTOR);
+    uint32_t miniport = kint ? BRIDGE_MEM32(kint + 4) : 0;
+
+    if ((param & 0x1Fu) == 5u && miniport) {
+        ke_set_event(miniport + 0x1A4u);
+        return 1;
+    }
+    {
+        static unsigned n;
+        if (n++ < 8) {
+            fprintf(stderr, "  [NV2A] software method 0x%08X not handled (miniport 0x%08X)\n",
+                    param, miniport);
+            fflush(stderr);
+        }
+    }
+    return 0;
 }
 
 /* ── MmClaimGpuInstanceMemory (ordinal 168) ───────────────

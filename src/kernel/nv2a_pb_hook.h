@@ -25,4 +25,10 @@ typedef void (*nv2a_pb_method_hook_fn)(uint32_t subch, uint32_t method,
 /* NULL restores the software executor. */
 void nv2a_pb_set_method_hook(nv2a_pb_method_hook_fn fn);
 
+/* A hook that runs software methods (NV097 NO_OPERATION with a non-zero
+ * parameter, which on hardware raise an interrupt for D3D's handler) reports
+ * each parameter here; the runtime reproduces what D3D's handler would do
+ * (kernel_bridge.c). Returns 1 if the method is handled. Any thread. */
+int xbox_Nv2aSoftwareMethod(uint32_t param);
+
 #endif
