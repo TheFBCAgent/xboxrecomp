@@ -39,6 +39,7 @@
 #include "nv2a_combiner.h"
 #include "nv2a_backend.h"
 #include "nv2a_pb_capture.h"
+#include "nv2a_pb_hook.h"
 #if defined(_WIN32)
 #include <windows.h>
 #define NV_TLS __declspec(thread)
@@ -3528,9 +3529,28 @@ static void tex_stage_method(uint32_t method, uint32_t param)
         record_tex_reg(method, param);
 }
 
+static nv2a_pb_method_hook_fn s_method_hook;
+
+void nv2a_pb_set_method_hook(nv2a_pb_method_hook_fn fn)
+{
+    s_method_hook = fn;
+}
+
 void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
 {
     nv2a_pb_capture_method(subch, method, param);
+
+    /* An external renderer owns the stream (nv2a_pb_hook.h). Only the frame
+     * boundary is still the runtime's: the title counts its swaps, and the
+     * capture writes its file there. */
+    if (s_method_hook) {
+        s_method_hook(subch, method, param);
+        if (subch == 0 && method == NV097_FLIP_STALL) {
+            xbox_Nv2aFrameCounterFlip();
+            nv2a_pb_capture_flip();
+        }
+        return;
+    }
 
     static int inited;
 
