@@ -4,6 +4,7 @@
 #include "nv2a_pb_capture.h"
 #include "nv2a_vsh_interp.h"
 #include "xbox_memory_layout.h"
+#include "platform/xbox_winnt.h"   /* GetTickCount for the time-based arm */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -53,6 +54,9 @@ static struct {
     int active;
     const char *path;
     uint32_t target;      /* capture the frame ending at the target-th FLIP_STALL */
+    uint32_t target_ms;   /* RECOMP_PB_CAPTURE_MS: arm at the first flip >= this
+                             many ms after configure; 0 = arming by flip count */
+    uint32_t start_ms;    /* GetTickCount() at configure, for target_ms */
     uint32_t flips_seen;  /* FLIP_STALLs processed */
     int armed;            /* snapshots frozen; recording the frame */
     int done;             /* file written */
@@ -146,13 +150,29 @@ static void configure(void)
     s.active = 1;
     s.path = p;
     s.target = 1;
+    s.target_ms = 0;
+    s.start_ms = (uint32_t)GetTickCount();
     f = getenv("RECOMP_PB_CAPTURE_FLIP");
     if (f && f[0]) {
         long n = atol(f);
         if (n > 0)
             s.target = (uint32_t)n;
     }
-    fprintf(stderr, "[PBCAP] capturing flip %u to %s\n", s.target, s.path);
+    /* Time-based arming overrides the flip count. The flip count is not
+     * reproducible: frames before the level run uncapped, so it depends on
+     * how fast the host drew the title and movies. Arming on elapsed time
+     * matches a time-based trigger (a scripted pad event) and is stable. */
+    f = getenv("RECOMP_PB_CAPTURE_MS");
+    if (f && f[0]) {
+        long n = atol(f);
+        if (n > 0)
+            s.target_ms = (uint32_t)n;
+    }
+    if (s.target_ms)
+        fprintf(stderr, "[PBCAP] capturing first flip after %u ms to %s\n",
+                s.target_ms, s.path);
+    else
+        fprintf(stderr, "[PBCAP] capturing flip %u to %s\n", s.target, s.path);
 }
 
 /* Freeze the two memory regions and build the prelude from the shadow table
@@ -245,8 +265,9 @@ void nv2a_pb_capture_method(uint32_t subch, uint32_t method, uint32_t param)
     if (!s.active || s.done)
         return;
 
-    /* Capture the very first frame lazily: arm before its first method. */
-    if (!s.armed && s.target == 1)
+    /* Capture the very first frame lazily: arm before its first method.
+     * Only in flip-count mode -- a time-based arm waits for the flip. */
+    if (!s.armed && !s.target_ms && s.target == 1)
         arm();
 
     /* Mirror state for the prelude. */
@@ -268,10 +289,17 @@ void nv2a_pb_capture_flip(void)
         return;
 
     s.flips_seen++;
-    if (s.armed && s.flips_seen == s.target) {
+
+    /* A whole frame has passed since arm(): write it. arm() runs at the
+     * boundary before the recorded frame, so this fires one flip later. */
+    if (s.armed) {
         write_file();
         s.done = 1;
-    } else if (!s.armed && s.target > 1 && s.flips_seen == s.target - 1) {
+    } else if (s.target_ms) {
+        /* Time-based: freeze at the first flip boundary on/after T ms. */
+        if ((int32_t)(GetTickCount() - s.start_ms) >= (int32_t)s.target_ms)
+            arm();
+    } else if (s.target > 1 && s.flips_seen == s.target - 1) {
         arm();
     }
 }
