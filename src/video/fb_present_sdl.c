@@ -165,6 +165,42 @@ void xbox_FramebufferWindowPresent(uint32_t fb_va, uint32_t pitch)
     __atomic_sub_fetch(&s_in_present, 1, __ATOMIC_SEQ_CST);
 }
 
+/* A finished frame from an external renderer (nv2a_pb_hook.h): 0x00RRGGBB
+ * rows, top-down, cropped or padded with black to the window's size. */
+static void present_pixels_copy(const uint32_t *xrgb, uint32_t width,
+                                uint32_t height)
+{
+    struct fb_slot *s = &s_slot[s_back];
+    size_t need = (size_t)FB_W * FB_H * 4;
+    uint32_t w = width < FB_W ? width : FB_W;
+    uint32_t h = height < FB_H ? height : FB_H, y;
+
+    if (s->cap < need) {
+        uint8_t *n = (uint8_t *)realloc(s->px, need);
+        if (!n)
+            return;
+        s->px = n;
+        s->cap = need;
+    }
+    if (w < FB_W || h < FB_H)
+        memset(s->px, 0, need);
+    for (y = 0; y < h; y++)
+        memcpy(s->px + (size_t)y * FB_W * 4, xrgb + (size_t)y * width,
+               (size_t)w * 4);
+    publish(4);
+}
+
+void xbox_FramebufferWindowPresentPixels(const uint32_t *xrgb, uint32_t width,
+                                         uint32_t height)
+{
+    if (!__atomic_load_n(&s_running, __ATOMIC_SEQ_CST) || !xrgb)
+        return;
+    __atomic_add_fetch(&s_in_present, 1, __ATOMIC_SEQ_CST);
+    if (__atomic_load_n(&s_running, __ATOMIC_SEQ_CST))
+        present_pixels_copy(xrgb, width, height);
+    __atomic_sub_fetch(&s_in_present, 1, __ATOMIC_SEQ_CST);
+}
+
 /* Title bar: "<XBE title> | FPS: n | draws: n", as the GDI window shows it.
  * Written by the loader and the flip, read once a second by the main
  * thread; a torn read shows one stale value for a second. */

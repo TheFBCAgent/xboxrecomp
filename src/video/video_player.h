@@ -62,6 +62,10 @@ void xbox_FramebufferWindowStart(void);
 void xbox_FramebufferWindowSet(uint32_t fb_va, uint32_t pitch);
 /* Rows per displayed row: 2 for a 2x2 anti-aliased surface, else 1. */
 void xbox_FramebufferWindowSetAA(uint32_t sy);
+/* Show a frame an external renderer produced (0x00RRGGBB rows, top-down)
+ * instead of reading guest memory; for titles drawing through a method hook. */
+void xbox_FramebufferWindowPresentPixels(const uint32_t *xrgb, uint32_t width,
+                                         uint32_t height);
 int  xbox_FramebufferDumpBmp(const char *path);
 /* Title bar: "<XBE title> | FPS: n | draws: n". The name is the certificate's
  * UTF-16 title (40 chars max); the stats come from each flip. */

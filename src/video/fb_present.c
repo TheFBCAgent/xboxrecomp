@@ -123,6 +123,35 @@ void xbox_FramebufferWindowPresent(uint32_t fb_va, uint32_t pitch)
     InterlockedExchange(&s_present_idx, next);
 }
 
+/* A finished frame from an external renderer (nv2a_pb_hook.h), which keeps
+ * its surfaces on the host GPU, so there is no guest memory to read: the
+ * caller hands over 0x00RRGGBB rows, top-down. A frame of another size is
+ * cropped or padded with black at the window's 640x480. */
+void xbox_FramebufferWindowPresentPixels(const uint32_t *xrgb, uint32_t width,
+                                         uint32_t height)
+{
+    LONG next;
+    uint32_t y, w, h;
+
+    if (!s_fb_running || !xrgb)
+        return;
+    next = (s_present_idx == 0) ? 1 : 0;
+    if (!s_present[next]) {
+        s_present[next] = (uint32_t *)calloc((size_t)s_fb_width * s_fb_height,
+                                             4);
+        if (!s_present[next])
+            return;
+    }
+    w = width < s_fb_width ? width : s_fb_width;
+    h = height < s_fb_height ? height : s_fb_height;
+    if (w < s_fb_width || h < s_fb_height)
+        memset(s_present[next], 0, (size_t)s_fb_width * s_fb_height * 4);
+    for (y = 0; y < h; y++)
+        memcpy(s_present[next] + (size_t)y * s_fb_width,
+               xrgb + (size_t)y * width, (size_t)w * 4);
+    InterlockedExchange(&s_present_idx, next);
+}
+
 /* Title bar, the way ps3recomp's window shows it. Written by the flip,
  * read once a second by the window thread; a torn read shows one stale
  * number for a second, which nobody can tell apart from a real one. */
