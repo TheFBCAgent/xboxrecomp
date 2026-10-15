@@ -53,6 +53,13 @@ int  nv2a_vsh_run(const float in[NV2A_VSH_INPUTS][4], Nv2aVshOutput *out);
 /* Direct access, for the self-test. */
 void nv2a_vsh_set_constant(uint32_t index, const float v[4]);
 const float *nv2a_vsh_constant(uint32_t index);   /* for traces */
+
+/* Read back the uploaded program/constant state, for the frame capture's
+ * prelude (nv2a_pb_capture.c re-uploads it as load + data commands). */
+uint32_t nv2a_vsh_program_read(uint32_t slot, uint32_t word);      /* raw dword */
+uint32_t nv2a_vsh_constant_read(uint32_t index, uint32_t comp);    /* raw dword */
+uint32_t nv2a_vsh_start_slot_get(void);
+uint32_t nv2a_vsh_cxt_write_get(void);
 /* One component of a constant, raw bits: the viewport methods write c[58]
  * (scale) and c[59] (offset) a word at a time rather than via _CONSTANT. */
 void nv2a_vsh_constant_component(uint32_t index, uint32_t comp, uint32_t word);

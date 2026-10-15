@@ -1580,6 +1580,19 @@ static void xbox_Nv2aAckStart(void)
     }
 }
 
+/* Stop the GPU-poll thread. The frame-capture replay needs this before it
+ * restores the snapshotted NV2A aperture: the restored DMA_PUT would otherwise
+ * look like a fresh submission and be scanned (re-executed) again. */
+void xbox_Nv2aAckStop(void)
+{
+    if (g_nv2a_ack_thread) {
+        InterlockedExchange(&g_nv2a_ack_stop, 1);
+        WaitForSingleObject(g_nv2a_ack_thread, 1000);
+        CloseHandle(g_nv2a_ack_thread);
+        g_nv2a_ack_thread = NULL;
+    }
+}
+
 /* Separate allocation for Xbox kernel address space (0x80010000+).
  * Some RenderWare code reads the kernel PE header to detect features. */
 static void *g_kernel_memory = NULL;
@@ -4305,6 +4318,11 @@ static void heap_forget_ram_names(int m)
 const volatile uint8_t *xbox_PhysRamNameMap(void)
 {
     return g_phys_ram_named;
+}
+
+void xbox_ContiguousSetAllocatedBytes(uint32_t bytes)
+{
+    g_contig_high = bytes;
 }
 
 

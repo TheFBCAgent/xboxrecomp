@@ -38,6 +38,7 @@
 #include "nv2a_vsh_interp.h"
 #include "nv2a_combiner.h"
 #include "nv2a_backend.h"
+#include "nv2a_pb_capture.h"
 #if defined(_WIN32)
 #include <windows.h>
 #define NV_TLS __declspec(thread)
@@ -697,17 +698,14 @@ static uint32_t surface_bpp(void)
  * the sequence. */
 static int s_flip_dumping;
 
-static void dump_surface_bmp(void)
+static void write_surface_bmp(const char *path)
 {
-    const char *prefix = getenv("RECOMP_FB_DUMP");
     const uint8_t *mem = (const uint8_t *)xbox_GetMemoryOffset();
     int drawn = s_gpu.drawn_offset != 0;
     uint32_t offset = drawn ? s_gpu.drawn_offset : s_gpu.color_offset;
     uint32_t pitch = drawn ? s_gpu.drawn_pitch : s_gpu.pitch;
     uint32_t cx = drawn ? s_gpu.drawn_x : s_gpu.clip_x;
     uint32_t cy = drawn ? s_gpu.drawn_y : s_gpu.clip_y;
-    static int seq;
-    char path[512];
     uint32_t w = drawn ? s_gpu.drawn_w : s_gpu.clip_w;
     uint32_t h = drawn ? s_gpu.drawn_h : s_gpu.clip_h, y, x;
     uint32_t bpp = drawn ? s_gpu.drawn_bpp : surface_bpp();
@@ -715,14 +713,13 @@ static void dump_surface_bmp(void)
     uint8_t hdr[54];
     FILE *f;
 
-    if (!prefix || !w || !h || (bpp != 2 && bpp != 4) || !offset)
+    if (!path || !w || !h || (bpp != 2 && bpp != 4) || !offset)
         return;
 
     row_bytes = w * 3;
     pad = (4 - (row_bytes & 3)) & 3;
     filesz = 54 + (row_bytes + pad) * h;
 
-    snprintf(path, sizeof path, "%s%05d.bmp", prefix, seq++);
     f = fopen(path, "wb");
     if (!f)
         return;
@@ -763,9 +760,30 @@ static void dump_surface_bmp(void)
         }
     }
     fclose(f);
-    if (seq == 1)
+}
+
+static void dump_surface_bmp(void)
+{
+    const char *prefix = getenv("RECOMP_FB_DUMP");
+    static int seq;
+    char path[512];
+
+    if (!prefix)
+        return;
+    snprintf(path, sizeof path, "%s%05d.bmp", prefix, seq++);
+    write_surface_bmp(path);
+    if (seq == 1) {
+        int drawn = s_gpu.drawn_offset != 0;
         fprintf(stderr, "  [GPU] framebuffer dump: %s (%ux%u from 0x%08X %ubpp)\n",
-                path, w, h, s_gpu.color_offset, bpp);
+                path, drawn ? s_gpu.drawn_w : s_gpu.clip_w,
+                drawn ? s_gpu.drawn_h : s_gpu.clip_h,
+                s_gpu.color_offset, drawn ? s_gpu.drawn_bpp : surface_bpp());
+    }
+}
+
+void nv2a_pb_exec_dump_surface(const char *path)
+{
+    write_surface_bmp(path);
 }
 
 /* Defined below, next to the rest of the rasteriser; the clear path uses it
@@ -3512,6 +3530,8 @@ static void tex_stage_method(uint32_t method, uint32_t param)
 
 void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
 {
+    nv2a_pb_capture_method(subch, method, param);
+
     static int inited;
 
     /* BACK_END_WRITE_SEMAPHORE_RELEASE. The title's pointer already names the
@@ -3898,6 +3918,7 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
         s_gpu.drawn_stale = 1;
         if (s_backend && s_backend->flip)
             s_backend->flip();
+        nv2a_pb_capture_flip();
 
         if (verbose) {
             static unsigned n;

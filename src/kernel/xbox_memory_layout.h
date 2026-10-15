@@ -215,6 +215,10 @@ void xbox_PhysNoteRamName(uint32_t va);
  * model's view. */
 const volatile uint8_t *xbox_PhysRamNameMap(void);
 uint32_t xbox_ContiguousInUseBytes(void);
+/* Restore the high-water mark that xbox_ContiguousAllocatedBytes reports, so
+ * the pushbuffer executor's dma_resolve maps a physical offset the same way it
+ * did during a captured frame (frame-capture replay). */
+void xbox_ContiguousSetAllocatedBytes(uint32_t bytes);
 
 int xbox_Nv2aMirrorFence(uint32_t device_ptr_va,
                          uint32_t put_off, uint32_t get_ptr_off);
@@ -224,6 +228,10 @@ int xbox_Nv2aMirrorFence(uint32_t device_ptr_va,
 uint32_t xbox_Nv2aFenceWordVa(void);
 
 void xbox_MemoryLayoutShutdown(void);
+
+/* Stop the GPU-poll (ack) thread. Used by the frame-capture replay before it
+ * restores the snapshotted NV2A aperture. Safe to call when not running. */
+void xbox_Nv2aAckStop(void);
 
 /**
  * Check if an address falls within the Xbox memory map.

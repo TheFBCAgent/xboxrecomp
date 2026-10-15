@@ -188,6 +188,23 @@ const float *nv2a_vsh_constant(uint32_t index)
     return s_const[index < NV2A_VSH_CONSTANTS ? index : 0];
 }
 
+uint32_t nv2a_vsh_program_read(uint32_t slot, uint32_t word)
+{
+    return (slot < NV2A_VSH_SLOTS && word < 4) ? s_program[slot][word] : 0;
+}
+
+uint32_t nv2a_vsh_constant_read(uint32_t index, uint32_t comp)
+{
+    uint32_t bits;
+    if (index >= NV2A_VSH_CONSTANTS || comp >= 4)
+        return 0;
+    memcpy(&bits, &s_const[index][comp], 4);
+    return bits;
+}
+
+uint32_t nv2a_vsh_start_slot_get(void) { return s_start_slot; }
+uint32_t nv2a_vsh_cxt_write_get(void)  { return s_cxt_write; }
+
 void nv2a_vsh_constant_component(uint32_t index, uint32_t comp, uint32_t word)
 {
     if (index < NV2A_VSH_CONSTANTS && comp < 4)
