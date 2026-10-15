@@ -3005,25 +3005,45 @@ static void bridge_KeInitializeTimerEx(void)
  * during XInitDevices and enumerates from it.
  *
  * A due time is in 100 ns units, negative for relative and positive for an
- * absolute time since 1601. Only the relative form is honoured here; an
- * absolute due time is treated as immediate, which is wrong in principle and
- * has not come up in practice.
+ * absolute time since 1601, on the clock KeQuerySystemTime hands the title.
+ * The absolute form does come up: the XDK's timeSetEvent thread re-arms a
+ * periodic event that way, and treating it as "now" ran a 5 ms tick at the
+ * timer thread's poll rate.
  *
- * ponytail: one thread, a fixed table, and a 10 ms tick, so a due time is late
- * by up to a tick and a periodic timer drifts. Nothing here is scheduling
- * audio off a timer. A title that needs better wants the host's timer queue,
- * not a smaller sleep.
+ * One thread and a fixed table. It sleeps on a high-resolution waitable
+ * timer until the earliest due time (at most 10 ms, for the DPC drain and the
+ * vblank tick), so due times are kept to ~1 ms. A periodic timer is re-armed
+ * from its previous due time, not from "now", so it does not drift. This
+ * matters: titles schedule audio off timers (MKSM's sound driver is a 5 ms
+ * timeSetEvent tick), and the old Sleep(10) poll ran on the 15.6 ms system
+ * tick, so a 5 ms period fired ~64 times a second instead of 200.
  */
 #define XBOX_MAX_TIMERS 32
 typedef struct {
     uint32_t timer_va;      /* the guest KTIMER, 0 for a free slot */
     uint32_t dpc_va;
-    long long due_ms;       /* host tick when it fires */
-    long      period_ms;    /* 0 for one-shot */
+    long long due_us;       /* host time (timer_now_us) when it fires */
+    long long period_us;    /* 0 for one-shot */
 } XboxTimer;
 static XboxTimer g_timers[XBOX_MAX_TIMERS];
 static CRITICAL_SECTION g_timer_lock;
 static int g_timer_started;
+static HANDLE g_timer_wake;    /* set when a timer is armed: re-plan the wait */
+
+#ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
+#define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
+#endif
+
+static long long timer_now_us(void)
+{
+    static LARGE_INTEGER freq;
+    LARGE_INTEGER c;
+    if (!freq.QuadPart)
+        QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&c);
+    return (long long)(c.QuadPart / freq.QuadPart) * 1000000 +
+           (long long)(c.QuadPart % freq.QuadPart) * 1000000 / freq.QuadPart;
+}
 
 static DWORD WINAPI kernel_timer_thread(LPVOID unused)
 {
@@ -3052,29 +3072,61 @@ static DWORD WINAPI kernel_timer_thread(LPVOID unused)
         g_fs_base = tib;
     }
 
+    {
+        /* High resolution where the host has it (Windows 10 1803+), else a
+         * plain waitable timer, which still beats Sleep's rounding. */
+        HANDLE waits[2];
+        waits[0] = CreateWaitableTimerExW(NULL, NULL,
+                                          CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+                                          TIMER_ALL_ACCESS);
+        if (!waits[0])
+            waits[0] = CreateWaitableTimerW(NULL, FALSE, NULL);
+        waits[1] = g_timer_wake;
+
     for (;;) {
-        long long now;
+        long long now, next;
         int i;
 
-        Sleep(10);
+        /* Sleep until the earliest due timer, at most 10 ms. */
+        now = timer_now_us();
+        next = now + 10000;
+        EnterCriticalSection(&g_timer_lock);
+        for (i = 0; i < XBOX_MAX_TIMERS; i++)
+            if (g_timers[i].timer_va && g_timers[i].due_us < next)
+                next = g_timers[i].due_us;
+        LeaveCriticalSection(&g_timer_lock);
+        if (next > now) {
+            LARGE_INTEGER rel;
+            rel.QuadPart = -(next - now) * 10;          /* 100 ns, relative */
+            if (waits[0] && SetWaitableTimer(waits[0], &rel, 0, NULL, NULL, FALSE))
+                WaitForMultipleObjects(2, waits, FALSE, 20);
+            else
+                Sleep((DWORD)((next - now + 999) / 1000));
+        }
+
         kernel_vblank_tick();  /* the GPU's frame clock */
         kernel_drain_dpcs();   /* deferred work, before due timers */
-        now = (long long)GetTickCount64();
+        now = timer_now_us();
 
         for (i = 0; i < XBOX_MAX_TIMERS; i++) {
             uint32_t dpc, fired_va;
 
             EnterCriticalSection(&g_timer_lock);
-            if (!g_timers[i].timer_va || now < g_timers[i].due_ms) {
+            if (!g_timers[i].timer_va || now < g_timers[i].due_us) {
                 LeaveCriticalSection(&g_timer_lock);
                 continue;
             }
             fired_va = g_timers[i].timer_va;
             dpc = g_timers[i].dpc_va;
-            if (g_timers[i].period_ms > 0)
-                g_timers[i].due_ms = now + g_timers[i].period_ms;
-            else
+            if (g_timers[i].period_us > 0) {
+                /* From the last due time: no drift. Far behind (a stall,
+                 * a debugger) → restart from now rather than burst. */
+                g_timers[i].due_us += g_timers[i].period_us;
+                if (g_timers[i].due_us < now - 100000)
+                    g_timers[i].due_us = now + g_timers[i].period_us;
+            } else {
                 g_timers[i].timer_va = 0;      /* one-shot, done */
+            }
             LeaveCriticalSection(&g_timer_lock);
 
             /* Outside the lock: the routine can set or cancel timers. */
@@ -3092,20 +3144,41 @@ static DWORD WINAPI kernel_timer_thread(LPVOID unused)
             }
         }
     }
+    }
 }
 
 /* Shared by KeSetTimer and KeSetTimerEx; period is 0 for the former. */
 static void kernel_set_timer(uint32_t timer_va, long long due_100ns,
                              long period_ms, uint32_t dpc_va)
 {
-    long long delay_ms = (due_100ns < 0) ? (-due_100ns) / 10000 : 0;
+    long long delay_us;
     int i, free_slot = -1;
     uint32_t was_set = 0;
 
+    if (due_100ns < 0) {
+        delay_us = (-due_100ns) / 10;
+    } else {
+        LARGE_INTEGER sys;
+        xbox_KeQuerySystemTime(&sys);
+        delay_us = (due_100ns > sys.QuadPart) ? (due_100ns - sys.QuadPart) / 10 : 0;
+    }
+
     if (!g_timer_started) {
         InitializeCriticalSection(&g_timer_lock);
+        g_timer_wake = CreateEventW(NULL, FALSE, FALSE, NULL);
         g_timer_started = 1;
         CloseHandle(CreateThread(NULL, 0, kernel_timer_thread, NULL, 0, NULL));
+    }
+
+    /* A freshly set timer starts unsignaled, like the real KeSetTimer. Before
+     * it is armed: the thread may fire it at once, and a reset after that
+     * would lose the signal. */
+    {
+        HANDLE ev = ke_shadow_lookup(timer_va);
+        if (ev)
+            ResetEvent(ev);
+        if (timer_va)
+            BRIDGE_MEM32(timer_va + 4) = 0;   /* SignalState */
     }
 
     EnterCriticalSection(&g_timer_lock);
@@ -3116,17 +3189,12 @@ static void kernel_set_timer(uint32_t timer_va, long long due_100ns,
     if (free_slot >= 0) {
         g_timers[free_slot].timer_va  = timer_va;
         g_timers[free_slot].dpc_va    = dpc_va;
-        g_timers[free_slot].due_ms    = (long long)GetTickCount64() + delay_ms;
-        g_timers[free_slot].period_ms = period_ms;
+        g_timers[free_slot].due_us    = timer_now_us() + delay_us;
+        g_timers[free_slot].period_us = (long long)period_ms * 1000;
     }
     LeaveCriticalSection(&g_timer_lock);
-
-    /* A freshly set timer starts unsignaled, like the real KeSetTimer. */
-    {
-        HANDLE ev = ke_shadow_lookup(timer_va);
-        if (ev)
-            ResetEvent(ev);
-    }
+    if (g_timer_wake)
+        SetEvent(g_timer_wake);    /* it may be due before the current wait ends */
     g_eax = was_set;
 }
 
