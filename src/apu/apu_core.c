@@ -489,6 +489,16 @@ void mcpx_apu_monitor_init(MCPXAPUState *d, Error **errp)
         waveOutPrepareHeader(g_waveout.hwo, &g_waveout.hdrs[i], sizeof(WAVEHDR));
     }
 
+    {
+        /* RECOMP_APU_VOLUME, as for XAudio2 (both channels, 16 bits each) */
+        const char *e = getenv("RECOMP_APU_VOLUME");
+        if (e && *e) {
+            double vol = atof(e);
+            DWORD v = (DWORD)((vol < 0 ? 0 : vol > 1 ? 1 : vol) * 0xFFFF);
+            waveOutSetVolume(g_waveout.hwo, v | (v << 16));
+        }
+    }
+
     g_waveout.next_buf = 0;
     g_waveout.initialized = true;
     g_waveout.frames_written = 0;

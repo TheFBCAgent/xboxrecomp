@@ -116,6 +116,20 @@ int xa2_init(void)
         goto fail;
     }
 
+    /* RECOMP_APU_VOLUME=<0..1>: master volume (0 = silent, e.g. for
+     * unattended test runs; the pipeline and its stats still run). */
+    {
+        const char *e = getenv("RECOMP_APU_VOLUME");
+        if (e && *e) {
+            float vol = (float)atof(e);
+            if (vol < 0.0f) vol = 0.0f;
+            if (vol > 1.0f) vol = 1.0f;
+            IXAudio2Voice_SetVolume((IXAudio2Voice *)g_xa2_master, vol,
+                                    XAUDIO2_COMMIT_NOW);
+            fprintf(stderr, "[XA2] master volume %.2f (RECOMP_APU_VOLUME)\n", vol);
+        }
+    }
+
     hr = IXAudio2SourceVoice_Start(g_xa2_source, 0, XAUDIO2_COMMIT_NOW);
     if (FAILED(hr)) {
         fprintf(stderr, "[XA2] Start failed: 0x%08lX\n", hr);
