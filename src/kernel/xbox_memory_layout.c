@@ -19,6 +19,7 @@
 #include "kernel.h"
 #include "guest_vmem.h"
 #include "kernel_missing.h"
+#include "../../include/xbox/thread_name.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1575,6 +1576,7 @@ static void xbox_Nv2aAckStart(void)
     g_nv2a_ack_thread = CreateThread(NULL, 0, nv2a_ack_thread,
                                      g_nv2a_memory, 0, NULL);
     if (g_nv2a_ack_thread) {
+        xbox_name_thread(g_nv2a_ack_thread, "nv2a ack/pushbuffer");
         fprintf(stderr, "  NV2A busy-bit ack: %zu register(s) acknowledged\n",
                 sizeof(NV2A_ACK) / sizeof(NV2A_ACK[0]));
     }
@@ -2172,6 +2174,7 @@ static DWORD WINAPI watch_resolver(LPVOID unused)
     unsigned tries;
 
     (void)unused;
+    xbox_name_thread(NULL, "watch resolver");
     for (tries = 0; tries < 15000u && !g_watch_page; tries++) {
         uint32_t va;
         if (watch_resolve(&va) && watch_arm(va))
@@ -2415,8 +2418,10 @@ void xbox_WatchdogStart(void)
     s_watchdog_regs[2] = &g_edx; s_watchdog_regs[3] = &g_ebx;
     s_watchdog_regs[4] = &g_esi; s_watchdog_regs[5] = &g_edi;
     h = CreateThread(NULL, 0, xbox_watchdog_thread, NULL, 0, NULL);
-    if (h)
+    if (h) {
+        xbox_name_thread(h, "watchdog");
         CloseHandle(h);
+    }
 }
 
 /* SSE. 128 bits of architectural state, per-thread like the rest. */

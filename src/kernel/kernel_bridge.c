@@ -30,6 +30,7 @@
 #include "kernel_missing.h"
 #include "xbox_memory_layout.h"
 #include "recomp_icall_feedback.h"
+#include "../../include/xbox/thread_name.h"
 #include <stdio.h>
 /* stdlib.h is load-bearing, not tidiness. Without it C89 implicit declaration
  * makes malloc return `int`, so bridge_spawn_thread truncated its heap pointer
@@ -739,7 +740,17 @@ static DWORD WINAPI bridge_thread_main(LPVOID param)
     return 0;
 }
 
-static HANDLE bridge_spawn_thread(recomp_func_t fn, uint32_t ctx1,
+/* Names a guest thread after its creation call: "guest #<n> <routine>(<ctx1>)".
+ * XAPI's CreateThread passes the title's own routine as ctx1 to a common
+ * startup routine, so both are in the name. NULL = the calling thread. */
+static void bridge_name_guest_thread(HANDLE th, uint32_t routine, uint32_t ctx1)
+{
+    xbox_name_thread(th, "guest #%d 0x%08X(0x%08X)", g_thread_call_count,
+                     routine, ctx1);
+}
+
+static HANDLE bridge_spawn_thread(recomp_func_t fn, uint32_t routine,
+                                  uint32_t ctx1,
                                   uint32_t ctx2, uint32_t stack_top,
                                   uint32_t obj_va, uint32_t tls_size)
 {
@@ -756,7 +767,10 @@ static HANDLE bridge_spawn_thread(recomp_func_t fn, uint32_t ctx1,
     /* Record the game thread so a host-tick-driven title's watchdog can sample
      * it via xbox_thread_debug_handle. Harmless for default-model titles: they
      * spawn workers too, but never read it back. See kernel_thread.c. */
-    else xbox_set_game_thread(th);
+    else {
+        bridge_name_guest_thread(th, routine, ctx1);
+        xbox_set_game_thread(th);
+    }
     return th;
 }
 
@@ -764,7 +778,8 @@ static HANDLE bridge_spawn_thread(recomp_func_t fn, uint32_t ctx1,
  * an extra reference until the handle token owns one, so a worker that ends
  * at once cannot free it underneath us. The KE shadow gets its own duplicate
  * of the host thread handle, which is what KeWaitForSingleObject waits on. */
-static HANDLE bridge_spawn_guest_thread(recomp_func_t fn, uint32_t ctx1,
+static HANDLE bridge_spawn_guest_thread(recomp_func_t fn, uint32_t routine,
+                                        uint32_t ctx1,
                                         uint32_t ctx2, uint32_t stack_top,
                                         uint32_t handle_va, uint32_t tls_size)
 {
@@ -772,7 +787,7 @@ static HANDLE bridge_spawn_guest_thread(recomp_func_t fn, uint32_t ctx1,
     HANDLE th, shadow = NULL;
 
     thobj_ref(obj);
-    th = bridge_spawn_thread(fn, ctx1, ctx2, stack_top, obj, tls_size);
+    th = bridge_spawn_thread(fn, routine, ctx1, ctx2, stack_top, obj, tls_size);
     if (!th) {
         thobj_unref(obj);   /* the thread's own: it never ran */
     } else {
@@ -855,6 +870,7 @@ static void bridge_PsCreateSystemThreadEx(void)
                             fs4 ? fs4 - tls_size : 0, fs4);
                     fflush(stderr);
                 }
+                bridge_name_guest_thread(NULL, start_routine, start_context1);
                 g_esp -= 4; BRIDGE_MEM32(g_esp) = start_context2;
                 g_esp -= 4; BRIDGE_MEM32(g_esp) = start_context1;
                 g_esp -= 4; BRIDGE_MEM32(g_esp) = 0;
@@ -903,7 +919,7 @@ static void bridge_PsCreateSystemThreadEx(void)
                     fflush(stderr);
                     bridge_run_thread_inline(fn, start_context1, start_context2);
                 } else {
-                    bridge_spawn_guest_thread(fn, start_context1, start_context2,
+                    bridge_spawn_guest_thread(fn, start_routine, start_context1, start_context2,
                                               stack_top, xbox_handle_ptr,
                                               tls_size);
                     fprintf(stderr, "  [KERNEL] PsCreateSystemThreadEx: spawned "
@@ -3050,6 +3066,7 @@ static DWORD WINAPI kernel_timer_thread(LPVOID unused)
     int slot = xbox_worker_stack_alloc();
 
     (void)unused;
+    xbox_name_thread(NULL, "kernel timers");
     if (slot < 0) {
         fprintf(stderr, "  [KERNEL] timer thread has no worker stack; "
                         "timer DPCs will not run\n");
@@ -8553,6 +8570,7 @@ static void bridge_PsCreateSystemThread(void)
             fn = recomp_lookup_manual(start_routine);
         if (fn) {
             if (is_first_call) {
+                bridge_name_guest_thread(NULL, start_routine, start_context1);
                 g_esp -= 4; BRIDGE_MEM32(g_esp) = start_context2;
                 g_esp -= 4; BRIDGE_MEM32(g_esp) = start_context1;
                 g_esp -= 4; BRIDGE_MEM32(g_esp) = 0;
@@ -8571,7 +8589,7 @@ static void bridge_PsCreateSystemThread(void)
                 if (!stack_top) {
                     bridge_run_thread_inline(fn, start_context1, start_context2);
                 } else {
-                    bridge_spawn_guest_thread(fn, start_context1, start_context2,
+                    bridge_spawn_guest_thread(fn, start_routine, start_context1, start_context2,
                                               stack_top, xbox_handle_ptr, 0);
                 }
             }

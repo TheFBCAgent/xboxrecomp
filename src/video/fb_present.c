@@ -38,6 +38,7 @@
  * is the thing that receives the keys, so that is what has to remember
  * them. */
 #include "keyboard.h"   /* src/input */
+#include "../../include/xbox/thread_name.h"
 
 extern ptrdiff_t xbox_GetMemoryOffset(void);
 
@@ -677,8 +678,10 @@ void xbox_FramebufferWindowStart(void)
     if (InterlockedCompareExchange(&s_fb_running, 1, 0) != 0)
         return;
     th = CreateThread(NULL, 0, fb_thread, NULL, 0, NULL);
-    if (th)
+    if (th) {
+        xbox_name_thread(th, "fb window");
         CloseHandle(th);
+    }
     else
         InterlockedExchange(&s_fb_running, 0);
 }

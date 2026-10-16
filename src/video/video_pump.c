@@ -16,6 +16,7 @@
 #include <string.h>
 
 #include "video_player.h"
+#include "../../include/xbox/thread_name.h"
 #include "d3d/d3d8_xbox.h"
 #include "d3d/d3d8_internal.h"
 
@@ -172,6 +173,7 @@ int xbox_VideoPlayFile(const char *host_path)
     s_path[sizeof(s_path) - 1] = '\0';
 
     th = CreateThread(NULL, 0, vp_thread, NULL, 0, NULL);
+    if (th) xbox_name_thread(th, "video pump");
     if (!th) {
         InterlockedExchange(&s_playing, 0);
         return -1;

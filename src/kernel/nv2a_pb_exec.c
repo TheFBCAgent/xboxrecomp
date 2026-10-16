@@ -40,6 +40,7 @@
 #include "nv2a_backend.h"
 #include "nv2a_pb_capture.h"
 #include "nv2a_pb_hook.h"
+#include "../../include/xbox/thread_name.h"
 #if defined(_WIN32)
 #include <windows.h>
 #define NV_TLS __declspec(thread)
@@ -2458,6 +2459,7 @@ static struct {
 static DWORD WINAPI raster_worker(LPVOID arg)
 {
     int k = (int)(intptr_t)arg;
+    xbox_name_thread(NULL, "sw raster %d", k);
     for (;;) {
         WaitForSingleObject(s_pool.start[k], INFINITE);
         memset(&s_pool.cnt[k], 0, sizeof s_pool.cnt[k]);

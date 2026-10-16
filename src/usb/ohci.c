@@ -12,6 +12,7 @@
 #include "../kernel/xbox_memory_layout.h"
 #include "../kernel/kernel.h"
 #include "usb_gamepad.h"
+#include "../../include/xbox/thread_name.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -1027,6 +1028,7 @@ static DWORD WINAPI ohci_thread(LPVOID unused)
     unsigned first_port = 0, settle = 0;
 
     (void)unused;
+    xbox_name_thread(NULL, "ohci usb");
     {
         uint32_t tib = xbox_AllocThreadTib();
         if (!tib) {

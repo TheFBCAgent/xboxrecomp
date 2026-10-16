@@ -19,6 +19,7 @@
  * Pull in base QEMU type shims from NV2A extraction
  * ============================================================ */
 #include "../nv2a/qemu_shim.h"
+#include "../../include/xbox/thread_name.h"
 
 #include <math.h>
 
@@ -80,8 +81,9 @@ typedef void *(*QemuThreadFunc)(void *arg);
 static inline void qemu_thread_create(QemuThread *t, const char *name,
                                        void *(*func)(void *), void *arg,
                                        int mode) {
-    (void)name; (void)mode;
+    (void)mode;
     t->thread = CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)func, arg, 0, NULL);
+    if (t->thread) xbox_name_thread(t->thread, "%s", name);
 }
 #endif
 
