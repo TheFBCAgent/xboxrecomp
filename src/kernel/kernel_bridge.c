@@ -2932,6 +2932,25 @@ int xbox_Nv2aSoftwareMethod(uint32_t param)
     return 0;
 }
 
+/* A vertical blank. On hardware the PCRTC raises the NV2A interrupt and D3D's
+ * VBlank DPC (counts it, does the flip bookkeeping, acks PCRTC_INTR) sets the
+ * notification event at miniport + 0x194, the one BlockUntilVerticalBlank
+ * resets and then waits on. The runtime delivers no NV2A interrupts, so that
+ * wait failed at once (or, with RECOMP_TITLE_KEVENTS, blocked for good) and a
+ * thread pacing itself on it spun. A device model calls this once per emulated
+ * VBlank; only the event is reproduced, not the rest of the DPC. Returns 1
+ * once D3D has connected its interrupt, else 0. */
+int xbox_Nv2aVBlank(void)
+{
+    uint32_t kint = xbox_GetConnectedInterrupt(NV2A_VECTOR);
+    uint32_t miniport = kint ? BRIDGE_MEM32(kint + 4) : 0;
+
+    if (!miniport)
+        return 0;
+    ke_set_event(miniport + 0x194u);
+    return 1;
+}
+
 /* ── MmClaimGpuInstanceMemory (ordinal 168) ───────────────
  * PVOID MmClaimGpuInstanceMemory(SIZE_T NumberOfBytes, SIZE_T *Padding)
  *

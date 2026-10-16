@@ -31,4 +31,9 @@ void nv2a_pb_set_method_hook(nv2a_pb_method_hook_fn fn);
  * (kernel_bridge.c). Returns 1 if the method is handled. Any thread. */
 int xbox_Nv2aSoftwareMethod(uint32_t param);
 
+/* An emulated vertical blank: sets the event D3D's VBlank DPC would
+ * (BlockUntilVerticalBlank's), kernel_bridge.c. Call it once per VBlank from
+ * any thread. Returns 0 until D3D has connected its interrupt. */
+int xbox_Nv2aVBlank(void);
+
 #endif
