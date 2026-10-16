@@ -344,11 +344,64 @@ NTSTATUS __stdcall xbox_NtDuplicateObject(
     return STATUS_SUCCESS;
 }
 
+/*
+ * A thread that suspends itself until another one resumes it (a worker parked
+ * between passes) loses wake-ups here: a resume that arrives while the worker
+ * is still finishing its pass finds a suspend count of 0 and does nothing, and
+ * the worker then suspends until the resume after that. On the single-core
+ * Xbox the resumer usually woke a higher-priority worker that ran and parked
+ * again first, so the race hardly ever hit; on a multi-core host it hits all
+ * the time (MKSM's movie decoder thread missed frames, plan 2.7a6).
+ *
+ * So a self-suspend waits on a per-thread auto-reset event instead, and a
+ * resume of a thread that is not really suspended sets that event: an early
+ * resume is kept as one pending wake-up. Suspending another thread still uses
+ * SuspendThread. There is no switch back: with plain Suspend/ResumeThread and
+ * D3D's VBlank event blocking, MKSM crashed at boot inside NtResumeThread
+ * (plan 2.7a6; not traced).
+ */
+#define PARK_SLOTS 64
+static struct { DWORD tid; HANDLE ev; } g_park[PARK_SLOTS];
+static SRWLOCK g_park_lock = SRWLOCK_INIT;
+
+/* The park event of thread tid; create = make one if it has none. */
+static HANDLE park_event(DWORD tid, int create)
+{
+    HANDLE ev = NULL;
+    int i;
+    AcquireSRWLockExclusive(&g_park_lock);
+    for (i = 0; i < PARK_SLOTS && g_park[i].tid; i++) {
+        if (g_park[i].tid == tid) {
+            ev = g_park[i].ev;
+            break;
+        }
+    }
+    if (!ev && create && i < PARK_SLOTS) {
+        ev = CreateEventW(NULL, FALSE, FALSE, NULL);
+        if (ev) {
+            g_park[i].ev = ev;
+            g_park[i].tid = tid;
+        }
+    }
+    ReleaseSRWLockExclusive(&g_park_lock);
+    return ev;
+}
+
 NTSTATUS __stdcall xbox_NtSuspendThread(
     HANDLE ThreadHandle,
     PULONG PreviousSuspendCount)
 {
     DWORD prev;
+
+    if (GetThreadId(ThreadHandle) == GetCurrentThreadId()) {
+        HANDLE ev = park_event(GetCurrentThreadId(), 1);
+        if (ev) {
+            if (PreviousSuspendCount)
+                *PreviousSuspendCount = 0;
+            WaitForSingleObject(ev, INFINITE);
+            return STATUS_SUCCESS;
+        }
+    }
 
     /*
      * SuspendThread returns the previous suspend count, or (DWORD)-1 on
@@ -384,6 +437,15 @@ NTSTATUS __stdcall xbox_NtResumeThread(
         xbox_log(XBOX_LOG_ERROR, XBOX_LOG_THREAD,
             "NtResumeThread: ResumeThread failed (error %u)", GetLastError());
         return STATUS_UNSUCCESSFUL;
+    }
+
+    if (prev == 0) {
+        /* Not really suspended: parked on its event, or still running (keep the wake-up). */
+        HANDLE ev = park_event(GetThreadId(ThreadHandle), 1);
+        if (ev) {
+            SetEvent(ev);
+            prev = 1;
+        }
     }
 
     if (PreviousSuspendCount)
