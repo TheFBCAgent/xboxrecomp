@@ -201,6 +201,18 @@ void xbox_FramebufferWindowPresentPixels(const uint32_t *xrgb, uint32_t width,
     __atomic_sub_fetch(&s_in_present, 1, __ATOMIC_SEQ_CST);
 }
 
+/* The SDL window has no HWND and no GL hand-off yet. */
+void *xbox_FramebufferWindowHwnd(void) { return NULL; }
+void xbox_FramebufferWindowGpuPresent(int on) { (void)on; }
+int xbox_FramebufferWindowClientSize(uint32_t *width, uint32_t *height)
+{
+    if (width)
+        *width = 0;
+    if (height)
+        *height = 0;
+    return 0;
+}
+
 /* Title bar: "<XBE title> | FPS: n | draws: n", as the GDI window shows it.
  * Written by the loader and the flip, read once a second by the main
  * thread; a torn read shows one stale value for a second. */

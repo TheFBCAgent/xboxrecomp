@@ -62,10 +62,21 @@ void xbox_FramebufferWindowStart(void);
 void xbox_FramebufferWindowSet(uint32_t fb_va, uint32_t pitch);
 /* Rows per displayed row: 2 for a 2x2 anti-aliased surface, else 1. */
 void xbox_FramebufferWindowSetAA(uint32_t sy);
-/* Show a frame an external renderer produced (0x00RRGGBB rows, top-down)
- * instead of reading guest memory; for titles drawing through a method hook. */
+/* Show a frame an external renderer produced (0x00RRGGBB rows, top-down, any
+ * size: it is scaled to fit the window with black bars) instead of reading
+ * guest memory; for titles drawing through a method hook. */
 void xbox_FramebufferWindowPresentPixels(const uint32_t *xrgb, uint32_t width,
                                          uint32_t height);
+/* For a renderer that draws into the window itself (a GL context on its DC).
+ * The HWND is NULL until the window exists. Its thread owns it: never
+ * SendMessage to it from a thread holding locks the title waits on.
+ * GpuPresent(1) stops the window's own GDI blit so the two don't fight.
+ * ClientSize is the client area in physical pixels as of the last WM_SIZE
+ * (the window is per-monitor DPI aware; the rest of the process is not, so
+ * GetClientRect from another thread may answer in scaled units); 0 = none. */
+void *xbox_FramebufferWindowHwnd(void);
+void xbox_FramebufferWindowGpuPresent(int on);
+int  xbox_FramebufferWindowClientSize(uint32_t *width, uint32_t *height);
 int  xbox_FramebufferDumpBmp(const char *path);
 /* Title bar: "<XBE title> | FPS: n | draws: n". The name is the certificate's
  * UTF-16 title (40 chars max); the stats come from each flip. */
