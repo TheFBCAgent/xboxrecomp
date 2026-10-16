@@ -155,6 +155,36 @@ static uint32_t *dsp_ack_auto_slot(MCPXAPUState *d)
     return (uint32_t *)(mcpx_apu_phys(page) + GP_DOORBELL_OFFSET);
 }
 
+/* ── EP "alive" word ─────────────────────────────────────────────────────
+ *
+ * DirectSound's work pass also checks a word in EP DSP memory that the EP
+ * program keeps at 0xCCCCCC while it runs. Anything else means a dead DSP:
+ * DirectSound resets both DSPs, turns the sample counter off and on around it
+ * and busy-waits 10 ms (KeStallExecutionProcessor(10000)). With no DSP
+ * program running the word stayed 0 and that happened ~20 times a second
+ * (MKSM: 1,931 resets in a 95 s boot, plan 2.7a6), stalling whichever thread
+ * called DirectSound -- during movies the main thread, which then missed
+ * VBlanks.
+ *
+ * RECOMP_APU_EP_ALIVE=<va> (hex, inside the EP window 0xFE850000-0xFE87FFFF,
+ * which is plain memory) stores 0x00CCCCCC there once per APU frame, as the
+ * program would. MKSM's DirectSound reads it at 0xFE85A018 (found through
+ * a pointer in its data). Same kind of fake as the doorbell ack: a handshake, no DSP. */
+static uint32_t s_ep_alive = 1;   /* 1 = not read yet, 0 = off */
+
+static void ep_alive_poll(MCPXAPUState *d)
+{
+    if (s_ep_alive == 1) {
+        const char *e = getenv("RECOMP_APU_EP_ALIVE");
+        unsigned long va = (e && *e) ? strtoul(e, NULL, 16) : 0;
+        s_ep_alive = (va >= 0xFE850000ul && va < 0xFE880000ul && !(va & 3)) ? (uint32_t)va : 0;
+        if (s_ep_alive)
+            fprintf(stderr, "[APU] EP alive word 0x%08X kept at 0x00CCCCCC\n", s_ep_alive);
+    }
+    if (s_ep_alive)
+        *(volatile uint32_t *)(d->ram_ptr + s_ep_alive) = 0x00CCCCCCu;
+}
+
 void mcpx_apu_dsp_ack_poll(MCPXAPUState *d)
 {
     int i;
@@ -163,6 +193,7 @@ void mcpx_apu_dsp_ack_poll(MCPXAPUState *d)
         dsp_ack_init();
     if (!d->ram_ptr)
         return;
+    ep_alive_poll(d);
     if (s_dsp_ack_auto) {
         uint32_t *slot = dsp_ack_auto_slot(d);
         if (slot && *slot) {
